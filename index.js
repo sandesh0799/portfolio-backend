@@ -1,45 +1,38 @@
 const express = require("express");
 const multer = require("multer");
-const path = require("path");
 const cors = require("cors");
-const fs = require("fs");
+const { createClient } = require("@supabase/supabase-js");
 require("dotenv").config();
 
 const app = express();
 
 // Load env variables
 const PORT = process.env.PORT || 3000;
-const UPLOAD_FOLDER = process.env.UPLOAD_FOLDER || "uploads";
 const BASE_URL = process.env.BASE_URL;
+
+// Initialize Supabase client
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_ANON_KEY;
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Enable CORS
 app.use(cors());
 
-// Serve static files from uploads folder
-app.use(`/${UPLOAD_FOLDER}`, express.static(UPLOAD_FOLDER));
+// Multer Storage Setup - using memory storage for cloud upload
+const storage = multer.memoryStorage();
 
-// Multer Storage Setup
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, UPLOAD_FOLDER);
-  },
-  filename: (req, file, cb) => {
-    const uniqueName = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, uniqueName + path.extname(file.originalname));
-  },
-});
-
-// File type validation (optional)
+// File type validation
 const fileFilter = (req, file, cb) => {
-  const allowedTypes = /jpeg|jpg|png|gif/;
+  const allowedTypes = /jpeg|jpg|png|gif|webp/;
   const extname = allowedTypes.test(
-    path.extname(file.originalname).toLowerCase()
+    file.originalname.split(".").pop().toLowerCase()
   );
-  const mimetype = allowedTypes.test(file.mimetype);
+  const mimetype = /jpeg|jpg|png|gif|webp/.test(file.mimetype);
+
   if (extname && mimetype) {
     cb(null, true);
   } else {
-    cb(new Error("Only image files are allowed (jpg, jpeg, png, gif)"));
+    cb(new Error("Only image files are allowed (jpg, jpeg, png, gif, webp)"));
   }
 };
 
@@ -47,8 +40,53 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
 });
+
+// Helper function to upload to Supabase
+const uploadToSupabase = async (file) => {
+  const uniqueName = Date.now() + "-" + Math.round(Math.random() * 1e9);
+  const fileName = uniqueName + "." + file.originalname.split(".").pop();
+
+  const { data, error } = await supabase.storage
+    .from("uploads")
+    .upload(fileName, file.buffer, {
+      contentType: file.mimetype,
+      upsert: false,
+    });
+
+  if (error) {
+    throw error;
+  }
+
+  const { data: urlData } = supabase.storage
+    .from("uploads")
+    .getPublicUrl(fileName);
+
+  return {
+    filename: fileName,
+    url: urlData.publicUrl,
+    size: file.size,
+    mimetype: file.mimetype,
+  };
+};
+
+// Error handler for multer
+const handleUploadError = (err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res
+        .status(400)
+        .json({ error: "File too large. Maximum size is 10MB." });
+    }
+  }
+
+  if (err.message.includes("Only image files")) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  res.status(500).json({ error: "Upload failed" });
+};
 
 // Test route
 app.get("/", (req, res) => {
@@ -56,58 +94,138 @@ app.get("/", (req, res) => {
 });
 
 // Single Image Upload
-app.post("/upload", upload.single("image"), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No file uploaded" });
-  }
+app.post(
+  "/upload",
+  upload.single("image"),
+  handleUploadError,
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
 
-  const fileUrl = `${BASE_URL}/${UPLOAD_FOLDER}/${req.file.filename}`;
-  res.json({
-    message: "Image uploaded successfully!",
-    filename: req.file.filename,
-    url: fileUrl,
-  });
-});
+      const result = await uploadToSupabase(req.file);
+      const fileUrl = BASE_URL
+        ? `${BASE_URL}/file/${result.filename}`
+        : result.url;
+
+      res.json({
+        message: "Image uploaded successfully!",
+        filename: result.filename,
+        url: fileUrl,
+      });
+    } catch (error) {
+      console.error("Upload error:", error);
+      res.status(500).json({ error: "Failed to upload image" });
+    }
+  }
+);
 
 // Multiple Image Upload
-app.post("/upload-multiple", upload.array("images", 10), (req, res) => {
-  if (!req.files || req.files.length === 0) {
-    return res.status(400).json({ error: "No files uploaded" });
+app.post(
+  "/upload-multiple",
+  upload.array("images", 10),
+  handleUploadError,
+  async (req, res) => {
+    try {
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ error: "No files uploaded" });
+      }
+
+      const uploadPromises = req.files.map((file) => uploadToSupabase(file));
+      const results = await Promise.all(uploadPromises);
+
+      const filesInfo = results.map((result) => ({
+        filename: result.filename,
+        url: BASE_URL ? `${BASE_URL}/file/${result.filename}` : result.url,
+      }));
+
+      res.json({
+        message: "Images uploaded successfully!",
+        files: filesInfo,
+      });
+    } catch (error) {
+      console.error("Multiple upload error:", error);
+      res.status(500).json({ error: "Failed to upload images" });
+    }
   }
+);
 
-  const filesInfo = req.files.map((file) => ({
-    filename: file.filename,
-    url: `${BASE_URL}/${UPLOAD_FOLDER}/${file.filename}`,
-  }));
+// Get all images
+app.get("/images", async (req, res) => {
+  try {
+    const { data: files, error } = await supabase.storage
+      .from("uploads")
+      .list("", {
+        limit: 100,
+        sortBy: { column: "created_at", order: "desc" },
+      });
 
-  res.json({
-    message: "Images uploaded successfully!",
-    files: filesInfo,
-  });
-});
-
-app.get("/images", (req, res) => {
-  fs.readdir(UPLOAD_FOLDER, (err, files) => {
-    if (err) {
-      console.error("Failed to read uploads directory", err);
-      return res.status(500).json({ error: "Failed to load images" });
+    if (error) {
+      throw error;
     }
 
-    // Filter only image files (basic filter)
+    // Filter only image files
     const images = files.filter((file) =>
-      /\.(jpe?g|png|gif|webp)$/i.test(file)
+      /\.(jpe?g|png|gif|webp)$/i.test(file.name)
     );
 
     // Build response array with filename + public URL
-    const imageData = images.map((filename) => ({
-      filename,
-      url: `${req.protocol}://${req.get("host")}/uploads/${filename}`,
-    }));
+    const imageData = images.map((file) => {
+      const { data: urlData } = supabase.storage
+        .from("uploads")
+        .getPublicUrl(file.name);
+
+      return {
+        filename: file.name,
+        url: urlData.publicUrl,
+      };
+    });
 
     res.json(imageData);
-  });
+  } catch (error) {
+    console.error("Failed to read images", error);
+    res.status(500).json({ error: "Failed to load images" });
+  }
 });
+
+// Optional: Serve files through your API (if you want custom URLs)
+app.get("/file/:filename", async (req, res) => {
+  try {
+    const { filename } = req.params;
+
+    const { data, error } = await supabase.storage
+      .from("uploads")
+      .download(filename);
+
+    if (error) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    // Get file info to set proper headers
+    const { data: fileList } = await supabase.storage
+      .from("uploads")
+      .list("", { search: filename });
+
+    const fileInfo = fileList?.find((f) => f.name === filename);
+
+    res.set({
+      "Content-Type": fileInfo?.metadata?.mimetype || "image/jpeg",
+      "Content-Length": data.size,
+      "Cache-Control": "public, max-age=31536000",
+    });
+
+    const buffer = await data.arrayBuffer();
+    res.send(Buffer.from(buffer));
+  } catch (error) {
+    console.error("Error serving file:", error);
+    res.status(500).json({ error: "Failed to serve file" });
+  }
+});
+
 // Start server
 app.listen(PORT, () => {
-  console.log(`✅ Server running on ${BASE_URL}`);
+  console.log(`✅ Server running on ${BASE_URL || `http://localhost:${PORT}`}`);
 });
+
+module.exports = app;
