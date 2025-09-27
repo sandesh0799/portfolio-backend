@@ -58,7 +58,7 @@ const upload = multer({
 
 // Test route
 app.get("/", (req, res) => {
-  res.send("Image Upload Server is Running 🚀");
+  res.send("📡 Image Upload Server is Running 🚀");
 });
 
 // Single Image Upload
@@ -96,7 +96,7 @@ app.post("/upload-multiple", upload.array("images", 10), (req, res) => {
 app.get("/images", (req, res) => {
   fs.readdir(UPLOAD_FOLDER, (err, files) => {
     if (err) {
-      console.error("Failed to read uploads directory", err);
+      console.error("❌ Failed to read uploads directory", err);
       return res.status(500).json({ error: "Failed to load images" });
     }
 
