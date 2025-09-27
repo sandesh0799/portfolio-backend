@@ -10,13 +10,7 @@ const app = express();
 // Load env variables
 const PORT = process.env.PORT || 3000;
 const UPLOAD_FOLDER = process.env.UPLOAD_FOLDER || "uploads";
-const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
-
-// Ensure upload folder exists
-if (!fs.existsSync(UPLOAD_FOLDER)) {
-  fs.mkdirSync(UPLOAD_FOLDER, { recursive: true });
-  console.log(`📁 Created upload folder: ${UPLOAD_FOLDER}`);
-}
+const BASE_URL = process.env.BASE_URL;
 
 // Enable CORS
 app.use(cors());
@@ -35,7 +29,7 @@ const storage = multer.diskStorage({
   },
 });
 
-// Optional: File type validation
+// File type validation (optional)
 const fileFilter = (req, file, cb) => {
   const allowedTypes = /jpeg|jpg|png|gif/;
   const extname = allowedTypes.test(
@@ -58,7 +52,7 @@ const upload = multer({
 
 // Test route
 app.get("/", (req, res) => {
-  res.send("📡 Image Upload Server is Running 🚀");
+  res.send("Image Upload Server is Running 🚀");
 });
 
 // Single Image Upload
@@ -69,7 +63,7 @@ app.post("/upload", upload.single("image"), (req, res) => {
 
   const fileUrl = `${BASE_URL}/${UPLOAD_FOLDER}/${req.file.filename}`;
   res.json({
-    message: "✅ Image uploaded successfully!",
+    message: "Image uploaded successfully!",
     filename: req.file.filename,
     url: fileUrl,
   });
@@ -87,33 +81,33 @@ app.post("/upload-multiple", upload.array("images", 10), (req, res) => {
   }));
 
   res.json({
-    message: "✅ Images uploaded successfully!",
+    message: "Images uploaded successfully!",
     files: filesInfo,
   });
 });
 
-// List Uploaded Images
 app.get("/images", (req, res) => {
   fs.readdir(UPLOAD_FOLDER, (err, files) => {
     if (err) {
-      console.error("❌ Failed to read uploads directory", err);
+      console.error("Failed to read uploads directory", err);
       return res.status(500).json({ error: "Failed to load images" });
     }
 
+    // Filter only image files (basic filter)
     const images = files.filter((file) =>
       /\.(jpe?g|png|gif|webp)$/i.test(file)
     );
 
+    // Build response array with filename + public URL
     const imageData = images.map((filename) => ({
       filename,
-      url: `${req.protocol}://${req.get("host")}/${UPLOAD_FOLDER}/${filename}`,
+      url: `${req.protocol}://${req.get("host")}/uploads/${filename}`,
     }));
 
     res.json(imageData);
   });
 });
-
 // Start server
 app.listen(PORT, () => {
-  console.log(`✅ Server running at: ${BASE_URL}`);
+  console.log(`✅ Server running on ${BASE_URL}`);
 });
