@@ -2,6 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
+const { v4: uuidv4 } = require("uuid");
 require("dotenv").config();
 
 const app = express();
@@ -45,8 +46,9 @@ const upload = multer({
 
 // Helper function to upload to Supabase
 const uploadToSupabase = async (file) => {
-  const uniqueName = Date.now() + "-" + Math.round(Math.random() * 1e9);
-  const fileName = uniqueName + "." + file.originalname.split(".").pop();
+  const id = uuidv4();
+  const ext = file.originalname.split(".").pop();
+  const fileName = `${id}.${ext}`;
 
   const { data, error } = await supabase.storage
     .from("uploads")
@@ -64,6 +66,7 @@ const uploadToSupabase = async (file) => {
     .getPublicUrl(fileName);
 
   return {
+    id,
     filename: fileName,
     url: urlData.publicUrl,
     size: file.size,
@@ -111,6 +114,7 @@ app.post(
 
       res.json({
         message: "Image uploaded successfully!",
+        id: result.id,
         filename: result.filename,
         url: fileUrl,
       });
@@ -136,6 +140,7 @@ app.post(
       const results = await Promise.all(uploadPromises);
 
       const filesInfo = results.map((result) => ({
+        id: result.id,
         filename: result.filename,
         url: BASE_URL ? `${BASE_URL}/file/${result.filename}` : result.url,
       }));
@@ -170,13 +175,14 @@ app.get("/images", async (req, res) => {
       /\.(jpe?g|png|gif|webp)$/i.test(file.name)
     );
 
-    // Build response array with filename + public URL
+    // Build response array with id, filename + public URL
     const imageData = images.map((file) => {
       const { data: urlData } = supabase.storage
         .from("uploads")
         .getPublicUrl(file.name);
 
       return {
+        id: file.name.split(".")[0], // The UUID part
         filename: file.name,
         url: urlData.publicUrl,
       };
@@ -220,6 +226,53 @@ app.get("/file/:filename", async (req, res) => {
   } catch (error) {
     console.error("Error serving file:", error);
     res.status(500).json({ error: "Failed to serve file" });
+  }
+});
+
+// Delete image by filename
+app.delete("/images/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({ error: "ID is required" });
+    }
+
+    // List files that start with the given id
+    const { data: files, error: listError } = await supabase.storage
+      .from("uploads")
+      .list("", { search: id });
+
+    if (listError) {
+      console.error("Error listing files:", listError);
+      return res.status(500).json({ error: "Failed to search files" });
+    }
+
+    // Find the exact file where filename starts with the id + '.'
+    const fileToDelete = files.find((file) => file.name.startsWith(id + "."));
+
+    if (!fileToDelete) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    // Delete the file by full filename
+    const { error: deleteError } = await supabase.storage
+      .from("uploads")
+      .remove([fileToDelete.name]);
+
+    if (deleteError) {
+      console.error("Delete error:", deleteError);
+      return res.status(500).json({ error: "Failed to delete image" });
+    }
+
+    res.json({
+      message: "Image deleted successfully",
+      id: id,
+      filename: fileToDelete.name,
+    });
+  } catch (error) {
+    console.error("Delete error:", error);
+    res.status(500).json({ error: "Failed to delete image" });
   }
 });
 
