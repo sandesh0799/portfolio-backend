@@ -17,7 +17,7 @@ const supabaseKey = process.env.SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Enable CORS
-app.use(cors());
+app.use(cors({ origin: "*" }));
 
 // Multer Storage Setup - using memory storage for cloud upload
 const storage = multer.memoryStorage();
