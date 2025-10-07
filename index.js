@@ -2,7 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
-const { v4: uuidv4 } = require("uuid");
+const crypto = require("crypto");
 require("dotenv").config();
 
 const app = express();
@@ -46,7 +46,7 @@ const upload = multer({
 
 // Helper function to upload to Supabase
 const uploadToSupabase = async (file) => {
-  const id = uuidv4();
+  const id = crypto.randomUUID();
   const ext = file.originalname.split(".").pop();
   const fileName = `${id}.${ext}`;
 
