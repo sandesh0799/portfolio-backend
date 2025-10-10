@@ -3,6 +3,7 @@ const multer = require("multer");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
 require("dotenv").config();
 
 const app = express();
@@ -15,10 +16,15 @@ const BASE_URL = process.env.BASE_URL;
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
+const jwt_secret = process.env.JWT_SECRET;
 
 // Enable CORS
 app.use(cors({ origin: "*" }));
+// Parse JSON bodies - THIS IS CRITICAL!
+app.use(express.json());
 
+// Parse URL-encoded bodies
+app.use(express.urlencoded({ extended: true }));
 // Multer Storage Setup - using memory storage for cloud upload
 const storage = multer.memoryStorage();
 
@@ -50,7 +56,7 @@ const uploadToSupabase = async (file) => {
   const ext = file.originalname.split(".").pop();
   const fileName = `${id}.${ext}`;
 
-  const { data, error } = await supabase.storage
+  const { error } = await supabase.storage
     .from("uploads")
     .upload(fileName, file.buffer, {
       contentType: file.mimetype,
@@ -75,7 +81,7 @@ const uploadToSupabase = async (file) => {
 };
 
 // Error handler for multer
-const handleUploadError = (err, req, res, next) => {
+const handleUploadError = (err, req, res) => {
   if (err instanceof multer.MulterError) {
     if (err.code === "LIMIT_FILE_SIZE") {
       return res
@@ -276,6 +282,131 @@ app.delete("/images/:id", async (req, res) => {
   }
 });
 
+// JWT auth middleware
+const authenticateToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "No token provided" });
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser(token);
+
+    if (error || !user) {
+      return res.status(403).json({ error: "Invalid token" });
+    }
+
+    req.user = user; // user info from Supabase Auth
+    next();
+  } catch (err) {
+    return res.status(403).json({ error: "Invalid token" });
+  }
+};
+
+// Register
+const bcrypt = require("bcrypt"); // npm install bcrypt
+
+app.post("/register", async (req, res) => {
+  try {
+    const { email, username, full_name, role, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required" });
+    }
+
+    const allowedRoles = ["user", "admin", "moderator"];
+    const assignedRole = allowedRoles.includes(role) ? role : "user";
+
+    // Check if email already exists
+    const { data: existing, error: existingError } = await supabase
+      .from("users")
+      .select("*")
+      .eq("email", email)
+      .single();
+
+    if (existing) {
+      return res.status(409).json({ error: "Email already exists" });
+    }
+    if (existingError && existingError.code !== "PGRST116") {
+      return res.status(400).json({ error: existingError.message });
+    }
+
+    // Hash the password before saving
+    const saltRounds = 10;
+    const password_hash = await bcrypt.hash(password, saltRounds);
+
+    // Insert new user record with hashed password
+    const { data, error } = await supabase
+      .from("users")
+      .insert([
+        {
+          username: username || email.split("@")[0],
+          full_name: full_name || "",
+          email: email,
+          role: assignedRole,
+          password: password_hash,
+        },
+      ])
+      .select();
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    res.status(201).json({
+      message: "User record created",
+      user: data[0],
+    });
+  } catch (err) {
+    console.error("Error creating user:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Login
+app.post("/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    console.log(email, password);
+    // 1. Find user by email in Supabase table
+    const { data: user, error } = await supabase
+      .from("users")
+      .select("id, email, username, full_name, role, password")
+      .eq("email", email)
+      .single();
+    if (!user || error) {
+      return res.status(401).json({ message: "Invalid email or password" });
+    }
+
+    // 2. Compare password using bcrypt
+    const isMatch = await bcrypt.compare(password, user.password);
+
+    if (!isMatch) {
+      return res.status(401).json({ message: "Invalid email or password" });
+    }
+
+    // 3. Create JWT token
+    const token = jwt.sign({ userId: user.id }, jwt_secret, {
+      expiresIn: "1h",
+    });
+
+    // 4. Respond with token
+    res.json({ token });
+  } catch (err) {
+    console.error("Login error:", err);
+    res.status(500).json({ message: "Login failed" });
+  }
+});
+
+// Logout (client-side JWT deletion)
+app.post("/logout", authenticateToken, (req, res) => {
+  res.json({ message: "Logged out successfully" });
+});
 // Start server
 app.listen(PORT, () => {
   console.log(`✅ Server running on ${BASE_URL || `http://localhost:${PORT}`}`);
