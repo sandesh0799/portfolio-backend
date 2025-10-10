@@ -4,6 +4,8 @@ const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
+const bcrypt = require("bcrypt");
+
 require("dotenv").config();
 
 const app = express();
@@ -292,16 +294,22 @@ const authenticateToken = async (req, res, next) => {
   const token = authHeader.split(" ")[1];
 
   try {
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser(token);
+    // Decode and verify JWT token
+    const decoded = jwt.verify(token, jwt_secret);
+    const userId = decoded.userId;
+
+    // Fetch user from Supabase table by userId
+    const { data: user, error } = await supabase
+      .from("users")
+      .select("id, email, username, full_name, role")
+      .eq("id", userId)
+      .single();
 
     if (error || !user) {
-      return res.status(403).json({ error: "Invalid token" });
+      return res.status(403).json({ error: "Invalid token or user not found" });
     }
 
-    req.user = user; // user info from Supabase Auth
+    req.user = user; // Attach user object to request
     next();
   } catch (err) {
     return res.status(403).json({ error: "Invalid token" });
@@ -309,8 +317,6 @@ const authenticateToken = async (req, res, next) => {
 };
 
 // Register
-const bcrypt = require("bcrypt"); // npm install bcrypt
-
 app.post("/register", async (req, res) => {
   try {
     const { email, username, full_name, role, password } = req.body;
@@ -400,6 +406,25 @@ app.post("/login", async (req, res) => {
   } catch (err) {
     console.error("Login error:", err);
     res.status(500).json({ message: "Login failed" });
+  }
+});
+
+// Get current user profile
+app.get("/me", authenticateToken, async (req, res) => {
+  try {
+    const { data: user, error } = await supabase
+      .from("users")
+      .select("id, username, full_name, avatar_url, role, bio, updated_at")
+      .eq("id", req.user.id)
+      .single();
+
+    if (error || !user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch profile" });
   }
 });
 
