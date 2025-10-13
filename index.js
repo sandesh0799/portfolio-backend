@@ -11,6 +11,7 @@ const app = express();
 // Load env variables
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL;
+const jwt_secret = process.env.JWT_SECRET
 
 // Initialize Supabase client
 const supabaseUrl = process.env.SUPABASE_URL;
