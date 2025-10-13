@@ -3,11 +3,9 @@ const multer = require("multer");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 const crypto = require("crypto");
+require("dotenv").config();
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
-
-require("dotenv").config();
-
 const app = express();
 
 // Load env variables
@@ -18,67 +16,82 @@ const BASE_URL = process.env.BASE_URL;
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
-const jwt_secret = process.env.JWT_SECRET;
 
 // Enable CORS
 app.use(cors({ origin: "*" }));
-// Parse JSON bodies - THIS IS CRITICAL!
 app.use(express.json());
-
-// Parse URL-encoded bodies
-app.use(express.urlencoded({ extended: true }));
 // Multer Storage Setup - using memory storage for cloud upload
 const storage = multer.memoryStorage();
 
 // File type validation
 const fileFilter = (req, file, cb) => {
-  const allowed = /jpeg|jpg|png|gif|webp/;
-  const ext = allowed.test(file.originalname.split(".").pop().toLowerCase());
-  const mime = allowed.test(file.mimetype);
-  ext && mime ? cb(null, true) : cb(new Error("Only image files are allowed"));
+  const allowedTypes = /jpeg|jpg|png|gif|webp/;
+  const extname = allowedTypes.test(
+    file.originalname.split(".").pop().toLowerCase()
+  );
+  const mimetype = /jpeg|jpg|png|gif|webp/.test(file.mimetype);
+
+  if (extname && mimetype) {
+    cb(null, true);
+  } else {
+    cb(new Error("Only image files are allowed (jpg, jpeg, png, gif, webp)"));
+  }
 };
+
+// Initialize multer
 const upload = multer({
-  storage,
-  fileFilter,
-  limits: { fileSize: 10 * 1024 * 1024 },
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
 });
 
 // Helper function to upload to Supabase
 const uploadToSupabase = async (file) => {
   const id = crypto.randomUUID();
   const ext = file.originalname.split(".").pop();
-  const filename = `${id}.${ext}`;
+  const fileName = `${id}.${ext}`;
 
-  const { error } = await supabase.storage
+  const { data, error } = await supabase.storage
     .from("uploads")
-    .upload(filename, file.buffer, {
+    .upload(fileName, file.buffer, {
       contentType: file.mimetype,
       upsert: false,
     });
 
-  if (error) throw error;
+  if (error) {
+    throw error;
+  }
 
   const { data: urlData } = supabase.storage
     .from("uploads")
-    .getPublicUrl(filename);
+    .getPublicUrl(fileName);
+
   return {
     id,
-    filename,
+    filename: fileName,
     url: urlData.publicUrl,
     size: file.size,
     mimetype: file.mimetype,
   };
 };
+
 // Error handler for multer
-const handleUploadError = (err, req, res) => {
-  if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
-    return res.status(400).json({ error: "File too large. Max 10MB." });
+const handleUploadError = (err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res
+        .status(400)
+        .json({ error: "File too large. Maximum size is 10MB." });
+    }
   }
+
   if (err.message.includes("Only image files")) {
     return res.status(400).json({ error: err.message });
   }
+
   res.status(500).json({ error: "Upload failed" });
 };
+
 // Test route
 app.get("/", (req, res) => {
   res.send("Image Upload Server is Running 🚀");
@@ -91,18 +104,28 @@ app.post(
   handleUploadError,
   async (req, res) => {
     try {
-      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+      if (!req.file) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+
       const result = await uploadToSupabase(req.file);
       const fileUrl = BASE_URL
         ? `${BASE_URL}/file/${result.filename}`
         : result.url;
-      res.json({ message: "Uploaded!", ...result, url: fileUrl });
-    } catch (err) {
-      console.error("Upload error:", err);
+
+      res.json({
+        message: "Image uploaded successfully!",
+        id: result.id,
+        filename: result.filename,
+        url: fileUrl,
+      });
+    } catch (error) {
+      console.error("Upload error:", error);
       res.status(500).json({ error: "Failed to upload image" });
     }
   }
 );
+
 // Multiple Image Upload
 app.post(
   "/upload-multiple",
@@ -114,18 +137,21 @@ app.post(
         return res.status(400).json({ error: "No files uploaded" });
       }
 
-      const uploads = await Promise.all(
-        req.files.map((file) => uploadToSupabase(file))
-      );
-      const files = uploads.map((f) => ({
-        id: f.id,
-        filename: f.filename,
-        url: BASE_URL ? `${BASE_URL}/file/${f.filename}` : f.url,
+      const uploadPromises = req.files.map((file) => uploadToSupabase(file));
+      const results = await Promise.all(uploadPromises);
+
+      const filesInfo = results.map((result) => ({
+        id: result.id,
+        filename: result.filename,
+        url: BASE_URL ? `${BASE_URL}/file/${result.filename}` : result.url,
       }));
 
-      res.json({ message: "Uploaded successfully", files });
-    } catch (err) {
-      console.error("Multiple upload error:", err);
+      res.json({
+        message: "Images uploaded successfully!",
+        files: filesInfo,
+      });
+    } catch (error) {
+      console.error("Multiple upload error:", error);
       res.status(500).json({ error: "Failed to upload images" });
     }
   }
@@ -141,25 +167,31 @@ app.get("/images", async (req, res) => {
         sortBy: { column: "created_at", order: "desc" },
       });
 
-    if (error) throw error;
+    if (error) {
+      throw error;
+    }
 
+    // Filter only image files
     const images = files.filter((file) =>
       /\.(jpe?g|png|gif|webp)$/i.test(file.name)
     );
-    const result = images.map((file) => {
+
+    // Build response array with id, filename + public URL
+    const imageData = images.map((file) => {
       const { data: urlData } = supabase.storage
         .from("uploads")
         .getPublicUrl(file.name);
+
       return {
-        id: file.name.split(".")[0],
+        id: file.name.split(".")[0], // The UUID part
         filename: file.name,
         url: urlData.publicUrl,
       };
     });
 
-    res.json(result);
-  } catch (err) {
-    console.error("Fetch images error:", err);
+    res.json(imageData);
+  } catch (error) {
+    console.error("Failed to read images", error);
     res.status(500).json({ error: "Failed to load images" });
   }
 });
@@ -168,16 +200,32 @@ app.get("/images", async (req, res) => {
 app.get("/file/:filename", async (req, res) => {
   try {
     const { filename } = req.params;
+
     const { data, error } = await supabase.storage
       .from("uploads")
       .download(filename);
-    if (error) return res.status(404).json({ error: "File not found" });
+
+    if (error) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    // Get file info to set proper headers
+    const { data: fileList } = await supabase.storage
+      .from("uploads")
+      .list("", { search: filename });
+
+    const fileInfo = fileList?.find((f) => f.name === filename);
+
+    res.set({
+      "Content-Type": fileInfo?.metadata?.mimetype || "image/jpeg",
+      "Content-Length": data.size,
+      "Cache-Control": "public, max-age=31536000",
+    });
 
     const buffer = await data.arrayBuffer();
-    res.set("Content-Type", "image/jpeg");
     res.send(Buffer.from(buffer));
-  } catch (err) {
-    console.error("Serve error:", err);
+  } catch (error) {
+    console.error("Error serving file:", error);
     res.status(500).json({ error: "Failed to serve file" });
   }
 });
@@ -186,17 +234,46 @@ app.get("/file/:filename", async (req, res) => {
 app.delete("/images/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { data: files } = await supabase.storage
+
+    if (!id) {
+      return res.status(400).json({ error: "ID is required" });
+    }
+
+    // List files that start with the given id
+    const { data: files, error: listError } = await supabase.storage
       .from("uploads")
       .list("", { search: id });
-    const file = files.find((f) => f.name.startsWith(id + "."));
-    if (!file) return res.status(404).json({ error: "File not found" });
 
-    await supabase.storage.from("uploads").remove([file.name]);
-    res.json({ message: "Deleted", filename: file.name });
-  } catch (err) {
-    console.error("Delete error:", err);
-    res.status(500).json({ error: "Failed to delete" });
+    if (listError) {
+      console.error("Error listing files:", listError);
+      return res.status(500).json({ error: "Failed to search files" });
+    }
+
+    // Find the exact file where filename starts with the id + '.'
+    const fileToDelete = files.find((file) => file.name.startsWith(id + "."));
+
+    if (!fileToDelete) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    // Delete the file by full filename
+    const { error: deleteError } = await supabase.storage
+      .from("uploads")
+      .remove([fileToDelete.name]);
+
+    if (deleteError) {
+      console.error("Delete error:", deleteError);
+      return res.status(500).json({ error: "Failed to delete image" });
+    }
+
+    res.json({
+      message: "Image deleted successfully",
+      id: id,
+      filename: fileToDelete.name,
+    });
+  } catch (error) {
+    console.error("Delete error:", error);
+    res.status(500).json({ error: "Failed to delete image" });
   }
 });
 
